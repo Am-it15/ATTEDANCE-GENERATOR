@@ -498,6 +498,24 @@ def build_result(subject, n_students, lecture_days, lab_cfg):
     }
 
 
+REQUIRED_RESULT_KEYS = {"subject", "lecture", "labs", "xlsx", "file_name"}
+
+
+def get_valid_result():
+    """Return the stored result only if it matches the current app version.
+
+    Results saved before a code update can be missing keys, which causes a
+    KeyError on rerun. Such stale results are discarded.
+    """
+    result = st.session_state.get("result")
+    if result is None:
+        return None
+    if not isinstance(result, dict) or not REQUIRED_RESULT_KEYS.issubset(result.keys()):
+        st.session_state.pop("result", None)
+        return None
+    return result
+
+
 # ═════════════════════════════════════════════
 #  UI HELPERS
 # ═════════════════════════════════════════════
@@ -604,7 +622,7 @@ if generate:
             )
 
 with right:
-    result = st.session_state.get("result")
+    result = get_valid_result()
 
     if not result:
         st.markdown(
