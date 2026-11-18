@@ -2,8 +2,18 @@ import io
 import math
 import random
 
+import subprocess
+import sys
+
 import pandas as pd
 import streamlit as st
+
+try:
+    import openpyxl  # noqa: F401
+except ModuleNotFoundError:
+    # Fallback so the app still runs when requirements.txt is missing (e.g. Streamlit Cloud)
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl"])
+
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
