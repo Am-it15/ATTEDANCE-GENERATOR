@@ -1,6 +1,7 @@
 import io
 import math
 import random
+import re
 
 import subprocess
 import sys
@@ -115,7 +116,7 @@ label, [data-testid="stWidgetLabel"] p {{ color: {MUTED} !important; font-size: 
 [data-baseweb="input"], [data-baseweb="base-input"] {{ background: {BG} !important; border-radius: 10px !important; }}
 [data-baseweb="input"] {{ border: 1px solid {BORDER_C} !important; }}
 [data-baseweb="input"]:focus-within {{ border-color: {GREEN} !important; box-shadow: 0 0 0 3px rgba(62,207,142,.15); }}
-.stNumberInput input {{ font-family: 'JetBrains Mono', monospace; color: {TEXT}; }}
+.stNumberInput input, .stTextInput input {{ font-family: 'JetBrains Mono', monospace; color: {TEXT}; }}
 .stNumberInput button {{ background: {SURFACE} !important; color: {MUTED} !important; border-color: {BORDER_C} !important; }}
 .stNumberInput button:hover {{ color: {GREEN} !important; }}
 
@@ -215,6 +216,31 @@ def section(icon_name, title, subtitle):
         f'<div class="sec-sub">{subtitle}</div>',
         unsafe_allow_html=True,
     )
+
+
+# ═════════════════════════════════════════════
+#  SUBJECT HELPERS
+# ═════════════════════════════════════════════
+
+_INVALID_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]")
+EXCEL_SHEET_MAX = 31
+
+
+def clean_subject(subject):
+    """Trim the subject and strip characters Excel does not allow in sheet names."""
+    return _INVALID_SHEET_CHARS.sub("", subject or "").strip()
+
+
+def sheet_name(subject, suffix):
+    """Build '<Subject>_<suffix>' within Excel's 31-character sheet-name limit."""
+    base = clean_subject(subject) or "Subject"
+    max_base = EXCEL_SHEET_MAX - len(suffix)
+    return base[:max_base].rstrip() + suffix
+
+
+def safe_file_stem(subject):
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", clean_subject(subject)).strip("_")
+    return f"attendance_{stem}" if stem else "attendance"
 
 
 # ═════════════════════════════════════════════
@@ -368,14 +394,17 @@ def set_col_widths(ws, num_days):
     ws.column_dimensions[get_column_letter(3 + num_days)].width = 14
 
 
-def build_workbook_bytes(lecture, labs):
+def build_workbook_bytes(subject, lecture, labs):
+    subj = clean_subject(subject) or "Subject"
     wb = Workbook()
+
+    # ── Lecture sheet: "<Subject>_Lecture" ──
     ws_t = wb.active
-    ws_t.title = "Lecture_Attendance"
+    ws_t.title = sheet_name(subject, "_Lecture")
     ws_t.freeze_panes = "C3"
     ld = lecture["days"]
     ws_t.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2 + ld + 1)
-    t = ws_t.cell(1, 1, "LECTURE ATTENDANCE REGISTER")
+    t = ws_t.cell(1, 1, f"{subj.upper()} — LECTURE ATTENDANCE REGISTER")
     t.fill, t.font, t.alignment = TITLE_FILL, TITLE_FONT, CENTER
     ws_t.row_dimensions[1].height = 22
     next_row = write_attendance_block(ws_t, 2, lecture["rows"], ld)
@@ -428,12 +457,13 @@ def build_workbook_bytes(lecture, labs):
             ws_t.cell(row, col).border = XL_BORDER
         next_row += 1
 
+    # ── Lab sheet: "<Subject>_Lab" (all batches stacked) ──
     if labs:
-        ws_l = wb.create_sheet("Lab_Attendance")
+        ws_l = wb.create_sheet(sheet_name(subject, "_Lab"))
         ws_l.freeze_panes = "C2"
         max_days = max(b["days"] for b in labs)
         ws_l.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2 + max_days + 1)
-        t = ws_l.cell(1, 1, "LAB ATTENDANCE REGISTER")
+        t = ws_l.cell(1, 1, f"{subj.upper()} — LAB ATTENDANCE REGISTER")
         t.fill, t.font, t.alignment = TITLE_FILL, TITLE_FONT, CENTER
         ws_l.row_dimensions[1].height = 22
         cur_row = 2
@@ -446,7 +476,7 @@ def build_workbook_bytes(lecture, labs):
     return buf.getvalue()
 
 
-def build_result(n_students, lecture_days, lab_cfg):
+def build_result(subject, n_students, lecture_days, lab_cfg):
     names = [f"Student_{i}" for i in range(1, n_students + 1)]
     lo, mi = random_distribution()
     lecture = {"days": lecture_days, "rows": generate_attendance_data(names, lecture_days, lo, mi, 1)}
@@ -459,7 +489,13 @@ def build_result(n_students, lecture_days, lab_cfg):
         labs.append({"days": cfg["days"], "rows": rows})
         s_idx += cfg["students"]
 
-    return {"lecture": lecture, "labs": labs, "xlsx": build_workbook_bytes(lecture, labs)}
+    return {
+        "subject": clean_subject(subject),
+        "lecture": lecture,
+        "labs": labs,
+        "xlsx": build_workbook_bytes(subject, lecture, labs),
+        "file_name": f"{safe_file_stem(subject)}.xlsx",
+    }
 
 
 # ═════════════════════════════════════════════
@@ -531,6 +567,14 @@ left, right = st.columns([1, 1.65], gap="large")
 
 with left:
     with st.container(border=True):
+        section("clipboard", "Subject", "Used for the Excel sheet names and file name")
+        subject = st.text_input(
+            "Subject name",
+            placeholder="e.g. Data Structures",
+            max_chars=60,
+        )
+
+    with st.container(border=True):
         section("calendar", "Lectures", "Theory register for the whole class")
         n_students = st.number_input("Total number of students", min_value=1, max_value=500, value=60, step=1)
         lecture_days = st.number_input("Number of lecture days", min_value=1, max_value=120, value=30, step=1)
@@ -551,8 +595,13 @@ with left:
     generate = st.button("Generate attendance sheet", type="primary")
 
 if generate:
-    with st.spinner("Generating attendance…"):
-        st.session_state["result"] = build_result(int(n_students), int(lecture_days), lab_cfg)
+    if not clean_subject(subject):
+        st.warning("Please enter a subject name before generating.")
+    else:
+        with st.spinner("Generating attendance…"):
+            st.session_state["result"] = build_result(
+                subject, int(n_students), int(lecture_days), lab_cfg
+            )
 
 with right:
     result = st.session_state.get("result")
@@ -561,7 +610,7 @@ with right:
         st.markdown(
             f'<div class="empty"><div class="e-icon">{icon("layers", 24)}</div>'
             f"<h3>Nothing generated yet</h3>"
-            f"<p>Fill in the details on the left and hit <b>Generate</b> to see a live preview here.</p></div>",
+            f"<p>Enter a subject and the details on the left, then hit <b>Generate</b> to see a live preview here.</p></div>",
             unsafe_allow_html=True,
         )
     else:
@@ -579,9 +628,9 @@ with right:
         )
 
         st.download_button(
-            "Download Excel file",
+            f"Download Excel file ({result['subject']})",
             data=result["xlsx"],
-            file_name="attendance_sheet.xlsx",
+            file_name=result["file_name"],
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
