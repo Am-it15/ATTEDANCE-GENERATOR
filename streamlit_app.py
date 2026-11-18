@@ -8,11 +8,31 @@ import sys
 import pandas as pd
 import streamlit as st
 
+def _ensure(pkg):
+    """Best-effort install when requirements.txt is missing. Tries pip, then uv."""
+    for cmd in (
+        [sys.executable, "-m", "pip", "install", pkg],
+        ["uv", "pip", "install", "--python", sys.executable, pkg],
+        [sys.executable, "-m", "uv", "pip", "install", "--python", sys.executable, pkg],
+    ):
+        try:
+            subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 try:
     import openpyxl  # noqa: F401
 except ModuleNotFoundError:
-    # Fallback so the app still runs when requirements.txt is missing (e.g. Streamlit Cloud)
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl"])
+    if not _ensure("openpyxl"):
+        st.error(
+            "Missing package: **openpyxl**. Add a file named `requirements.txt` to the root of "
+            "your repo with these three lines, then reboot the app:\n\n"
+            "```\nstreamlit\npandas\nopenpyxl\njinja2\n```"
+        )
+        st.stop()
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
